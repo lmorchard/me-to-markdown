@@ -64,6 +64,18 @@ me-to-markdown install mastodon
 me-to-markdown install github --version v0.2.0
 ```
 
+For dev iteration on the family, build directly from local sibling-repo
+checkouts instead of fetching releases:
+
+```sh
+me-to-markdown install --from-source            # auto-detect siblings
+me-to-markdown install --from-source=/path/to   # explicit source root
+```
+
+The auto-detect form walks up from the running binary looking for a
+directory whose children include at least one tool's repo
+(`mastodon-to-markdown/`, `linkding-to-markdown/`, etc.).
+
 To check what the orchestrator sees:
 
 ```sh
@@ -76,26 +88,33 @@ me-to-markdown list
 # 1. Install the underlying tools (skip if they're already on your $PATH).
 me-to-markdown install
 
-# 2. Scaffold per-tool config files in this directory.
-me-to-markdown init
+# 2. Run the orchestrated auth flow. Walks every tool, prompts for
+#    tokens / credentials, writes them to the shared env file, and
+#    shells into the interactive auth flows for Spotify (browser OAuth)
+#    and Pocket Casts (password login).
+me-to-markdown auth
 
-# 3. Finish the interactive setup the init step's output describes:
-#    - paste API tokens into mastodon-to-markdown.yaml,
-#      linkding-to-markdown.yaml, github-to-markdown.yaml
-#    - run `spotify-to-markdown auth` (one-time OAuth browser flow)
-#    - run `pocketcasts-to-markdown login` (one-time password)
-
-# 4. Run the orchestrator.
+# 3. Run the orchestrator.
 me-to-markdown export --since 168h -o weeknotes.md
 ```
+
+`me-to-markdown auth` writes secrets to `$XDG_CONFIG_HOME/me-to-markdown/env`
+by default (override with `--env-file`). Subsequent runs of `export`
+pick the file up automatically and merge its entries into every
+subprocess's environment, so each tool sees its `<TOOL>_<KEY>`
+secrets without per-tool config plumbing.
+
+If you'd rather edit yaml configs by hand, `me-to-markdown init` still
+scaffolds one per tool in the current directory.
 
 ## Commands
 
 | Command   | What it does |
 | --------- | ------------ |
 | `export`  | Run every selected tool's `export` in parallel; concatenate the output. Main user-facing command. |
-| `install` | Download release binaries into the managed bin dir, verify SHA-256. |
+| `install` | Download release binaries into the managed bin dir, verify SHA-256 (or `--from-source` to build from local sibling repos). |
 | `init`    | Run each tool's `init` to scaffold config files; print next-step instructions for interactive auth flows. |
+| `auth`    | Walk the per-tool authorization flows; persist secrets to the shared env file. |
 | `list`    | Show registered tools, where each binary resolves (`$PATH` / managed / missing), and its reported version. |
 | `version` | Print version, commit, and build date. |
 
@@ -144,6 +163,39 @@ log_json: false
 
 All keys can also be overridden via environment variables prefixed with
 `ME_TO_MARKDOWN_` (Viper's standard precedence: flag > env > file > default).
+
+### Shared env file
+
+The orchestrator can load a single `KEY=VALUE` file once at startup and
+merge its entries into every subprocess's environment. Useful for
+keeping all five tools' secrets in one place without per-tool config
+edits.
+
+```sh
+me-to-markdown --env-file ~/.config/me-to-markdown/env export --since 168h
+```
+
+The default path is `$XDG_CONFIG_HOME/me-to-markdown/env` (fallback
+`~/.config/me-to-markdown/env`); if that file exists it's loaded
+automatically. Override with `--env-file <path>` or `env_file:` in the
+yaml config.
+
+File format is intentionally simple: one `KEY=VALUE` per line, `#`
+comments and blank lines ignored, value taken verbatim after the first
+`=`. No shell interpolation, no `export` prefix, no quoting magic.
+
+```text
+MASTODON_SERVER=https://mastodon.social
+MASTODON_ACCESS_TOKEN=...
+LINKDING_URL=https://bookmarks.example.com
+LINKDING_TOKEN=...
+GITHUB_TOKEN=ghp_...
+SPOTIFY_CLIENT_ID=...
+POCKETCASTS_EMAIL=you@example.com
+POCKETCASTS_PASSWORD=...
+```
+
+`me-to-markdown auth` walks the user through filling this out.
 
 ## How tool binaries are located
 
