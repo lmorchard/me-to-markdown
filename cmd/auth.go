@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -17,29 +19,43 @@ import (
 	"golang.org/x/term"
 )
 
+// maxAuthAttempts caps how many times runAuthForTool will loop on a
+// failing validation before giving up and moving on.
+const maxAuthAttempts = 3
+
+// validateTimeout caps how long the orchestrator waits for a per-tool
+// credential check (`<tool> export --since 1m -o /dev/null`).
+const validateTimeout = 60 * time.Second
+
 var authCmd = &cobra.Command{
 	Use:   "auth",
-	Short: "Walk through per-tool authorization, populating the shared env file",
-	Long: `Run each registered tool's authorization flow in turn, capturing
-secrets into the shared env file (see --env-file).
+	Short: "Validate credentials per tool; prompt only for what's missing or broken",
+	Long: `Walk each registered tool and ensure its credentials are present and
+working. Idempotent: re-running on an already-configured family is a
+fast no-op.
 
-Per-tool behavior:
-  mastodon / linkding / github   prompt for an access token (or other
-                                 required credentials) and write the
-                                 matching <TOOL>_<KEY>= entries to the
-                                 env file.
-  spotify                        exec the tool's own ` + "`auth`" + `
-                                 subcommand (browser OAuth/PKCE flow).
-                                 Requires SPOTIFY_CLIENT_ID set first.
+For each tool, the orchestrator first runs a lightweight credential
+check (` + "`<tool> export --since 1m -o /dev/null`" + `). On success the
+tool is skipped with a ✓ note. On failure the tool's auth flow runs:
+
+  mastodon / linkding / github   prompt for the required tokens (or
+                                 instance URL) and write the matching
+                                 <TOOL>_<KEY>= entries to the env file.
+  spotify                        prompt for SPOTIFY_CLIENT_ID if needed,
+                                 then shell into ` + "`spotify-to-markdown auth`" + `
+                                 (PKCE browser flow).
   pocketcasts                    prompt for POCKETCASTS_EMAIL /
-                                 POCKETCASTS_PASSWORD if not already
-                                 present, then exec the tool's own
-                                 ` + "`login`" + ` subcommand to cache a
-                                 bearer token.
+                                 POCKETCASTS_PASSWORD, then shell into
+                                 ` + "`pocketcasts-to-markdown login`" + ` to
+                                 cache a bearer token.
 
-Use --tool <slug> to authorize a single tool. Without --tool, walks
-every registered tool in registry order. Skip prompts for credentials
-that are already present in the env / env-file.`,
+After each flow runs, the credential check repeats. Up to three
+attempts per tool before giving up and moving on.
+
+Flags:
+  --tool <slug>    authorize a single tool (default: walk all)
+  --force          re-prompt even if validation would pass (useful for
+                   rotating an already-working credential)`,
 	RunE: runAuth,
 }
 
@@ -63,27 +79,126 @@ func runAuth(cmd *cobra.Command, args []string) error {
 	if envFilePath == "" {
 		return errors.New("could not determine env file path; pass --env-file explicitly")
 	}
-	log.Infof("writing secrets to %s", envFilePath)
+	log.Debugf("env file: %s", envFilePath)
 
 	in := bufio.NewReader(os.Stdin)
-	ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Minute)
 	defer cancel()
 
+	var anyFailed bool
 	for _, t := range tools {
 		fmt.Printf("\n=== %s ===\n", t.Label)
-		handler, ok := authHandlers[t.Slug]
-		if !ok {
-			fmt.Printf("(no auth handler registered for %s; skipping)\n", t.Slug)
-			continue
-		}
-		if err := handler(ctx, t, envFilePath, in, force); err != nil {
+		if err := runAuthForTool(ctx, t, envFilePath, in, force); err != nil {
 			log.Errorf("%s: %v", t.Slug, err)
-			// Continue with the other tools rather than aborting the whole walk.
-			continue
+			anyFailed = true
 		}
 	}
 	fmt.Println()
+	if anyFailed {
+		return errors.New("one or more tools could not be authorized")
+	}
 	return nil
+}
+
+// runAuthForTool ensures tool t has working credentials. The flow:
+//
+//  1. If !force, run a credential check (`<tool> export --since 1m`).
+//     On success, print ✓ and return.
+//  2. Otherwise (or if validation failed), run the interactive auth
+//     handler. Re-validate. On failure, ask whether to retry. Loops
+//     up to maxAuthAttempts times.
+//
+// Returns an error if the tool ends up un-authorized after all
+// attempts; the outer walk continues with the next tool either way.
+func runAuthForTool(ctx context.Context, t registry.Tool, envFilePath string, in *bufio.Reader, force bool) error {
+	if !force {
+		if err := validateAuth(ctx, t, envFilePath); err == nil {
+			fmt.Printf("Already authorized. ✓\n")
+			return nil
+		} else {
+			fmt.Printf("Needs auth (%v).\n", err)
+		}
+	}
+
+	handler, ok := authHandlers[t.Slug]
+	if !ok {
+		return fmt.Errorf("no auth handler registered for %s", t.Slug)
+	}
+
+	for attempt := 1; attempt <= maxAuthAttempts; attempt++ {
+		// Always force=true inside the loop: by construction we've decided
+		// the tool needs (re-)auth, so don't skip-on-set.
+		err := handler(ctx, t, envFilePath, in, true)
+		if err != nil {
+			fmt.Printf("Auth flow failed: %v\n", err)
+		} else {
+			if vErr := validateAuth(ctx, t, envFilePath); vErr == nil {
+				fmt.Printf("✓ Authorized.\n")
+				return nil
+			} else {
+				fmt.Printf("Credentials persisted but validation failed: %v\n", vErr)
+			}
+		}
+
+		if attempt >= maxAuthAttempts {
+			break
+		}
+		ans, _ := readLine(in, fmt.Sprintf("Retry %s auth? [y/N]: ", t.Label))
+		if !strings.EqualFold(ans, "y") && !strings.EqualFold(ans, "yes") {
+			return errors.New("aborted by user")
+		}
+	}
+	return fmt.Errorf("gave up after %d attempt(s)", maxAuthAttempts)
+}
+
+// validateAuth runs a lightweight credential check for tool t by
+// invoking `<tool> export --since 1m -o /dev/null`. The orchestrator's
+// export contract guarantees that every registered tool authenticates
+// before doing any real work, so a successful exit means the
+// credentials reached the upstream service and were accepted.
+//
+// Network failures, timeouts, and tool bugs all also produce non-nil
+// errors here — validateAuth doesn't try to distinguish "bad creds"
+// from "bad network." The user re-running auth will see the same
+// error and can act on it.
+func validateAuth(ctx context.Context, t registry.Tool, envFilePath string) error {
+	binPath, _, err := runner.Resolve(t.Binary)
+	if err != nil {
+		return err
+	}
+
+	vctx, cancel := context.WithTimeout(ctx, validateTimeout)
+	defer cancel()
+
+	c := exec.CommandContext(vctx, binPath, "export", "--since", "1m", "-o", os.DevNull)
+	c.Env = append(os.Environ(), reloadEnv(envFilePath)...)
+	c.Stdout = io.Discard
+	var stderr bytes.Buffer
+	c.Stderr = &stderr
+
+	if err := c.Run(); err != nil {
+		summary := firstNonEmptyLine(stderr.Bytes())
+		if summary == "" {
+			summary = err.Error()
+		}
+		return errors.New(summary)
+	}
+	return nil
+}
+
+func firstNonEmptyLine(b []byte) string {
+	for _, raw := range bytes.Split(b, []byte("\n")) {
+		s := strings.TrimSpace(string(raw))
+		if s == "" {
+			continue
+		}
+		// Skip logrus timestamp prefixes for tidier output.
+		if i := strings.Index(s, "msg="); i >= 0 {
+			s = strings.Trim(s[i+4:], `"`)
+		}
+		return s
+	}
+	return ""
 }
 
 // effectiveEnvFilePath returns the path the auth command should write to.
