@@ -152,12 +152,12 @@ func runAuthForTool(ctx context.Context, t registry.Tool, envFilePath string, in
 }
 
 // validateAuth runs a lightweight credential check for tool t by
-// invoking `<tool> export --since 1m -o /dev/null`. The orchestrator's
-// export contract guarantees that every registered tool authenticates
-// before doing any real work, so a successful exit means the
-// credentials reached the upstream service and were accepted.
+// invoking `<tool> validate-auth`. Every registered tool implements
+// this as a family-wide contract: a fast authenticated probe that
+// exits 0 on success, non-zero on bad credentials / no token /
+// network failure.
 //
-// Network failures, timeouts, and tool bugs all also produce non-nil
+// Network failures, timeouts, and tool bugs all produce non-nil
 // errors here — validateAuth doesn't try to distinguish "bad creds"
 // from "bad network." The user re-running auth will see the same
 // error and can act on it.
@@ -170,7 +170,7 @@ func validateAuth(ctx context.Context, t registry.Tool, envFilePath string) erro
 	vctx, cancel := context.WithTimeout(ctx, validateTimeout)
 	defer cancel()
 
-	c := exec.CommandContext(vctx, binPath, "export", "--since", "1m", "-o", os.DevNull)
+	c := exec.CommandContext(vctx, binPath, "validate-auth")
 	c.Env = append(os.Environ(), reloadEnv(envFilePath)...)
 	c.Stdout = io.Discard
 	var stderr bytes.Buffer
