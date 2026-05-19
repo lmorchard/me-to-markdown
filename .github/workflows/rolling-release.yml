@@ -1,0 +1,111 @@
+name: Rolling Release
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: ci
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          VERSION="rolling-${GITHUB_SHA:0:7}"
+          COMMIT="${GITHUB_SHA:0:7}"
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="-X main.version=$VERSION -X main.commit=$COMMIT -X main.date=$BUILD_DATE"
+
+          go build -ldflags "$LDFLAGS" -o me-to-markdown${{ matrix.goos == 'windows' && '.exe' || '' }}
+
+      - name: Package (Unix)
+        if: matrix.goos != 'windows'
+        run: |
+          tar czf me-to-markdown-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz me-to-markdown
+
+      - name: Package (Windows)
+        if: matrix.goos == 'windows'
+        run: |
+          7z a me-to-markdown-${{ matrix.goos }}-${{ matrix.goarch }}.zip me-to-markdown.exe
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: me-to-markdown-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            me-to-markdown-*.tar.gz
+            me-to-markdown-*.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Generate checksums
+        run: |
+          find . -name "me-to-markdown-*" -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec sha256sum {} \; > checksums.txt
+
+      - name: Delete existing rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes || true
+          git push origin :refs/tags/latest || true
+
+      - name: Create Rolling Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Rolling Release
+          body: |
+            **Automated rolling release built from the latest commit on the main branch.**
+
+            ⚠️ This release may be unstable and is intended for testing purposes only.
+
+            **Commit:** ${{ github.sha }}
+            **Built:** ${{ github.event.head_commit.timestamp }}
+          prerelease: true
+          files: |
+            me-to-markdown-*/*.tar.gz
+            me-to-markdown-*/*.zip
+            checksums.txt
