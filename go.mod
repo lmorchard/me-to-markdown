@@ -1,8 +1,6 @@
 module github.com/lmorchard/me-to-markdown
 
-go 1.21.0
-
-toolchain go1.22.2
+go 1.25.0
 
 require (
 	github.com/sirupsen/logrus v1.9.3
@@ -23,7 +21,8 @@ require (
 	github.com/subosito/gotenv v1.6.0 // indirect
 	go.uber.org/atomic v1.9.0 // indirect
 	go.uber.org/multierr v1.9.0 // indirect
-	golang.org/x/sys v0.29.0 // indirect
+	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

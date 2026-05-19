@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -73,4 +74,75 @@ func DefaultPath() string {
 		return ""
 	}
 	return filepath.Join(home, ".config", "me-to-markdown", "env")
+}
+
+// Upsert merges updates into the env file at path, rewriting the file
+// in place. Existing entries whose key matches an update are replaced
+// (in their original position); new keys are appended. Comments and
+// blank lines in the source are preserved. The file (and parent dir)
+// is created with 0600 / 0700 perms if it doesn't exist.
+func Upsert(path string, updates map[string]string) error {
+	if path == "" {
+		return errors.New("envfile.Upsert: empty path")
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create dir for %s: %w", path, err)
+	}
+
+	var original []byte
+	if existing, err := os.ReadFile(path); err == nil {
+		original = existing
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+
+	applied := make(map[string]bool, len(updates))
+	var out strings.Builder
+
+	for _, line := range strings.SplitAfter(string(original), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			out.WriteString(line)
+			continue
+		}
+		eq := strings.IndexByte(trimmed, '=')
+		if eq <= 0 {
+			out.WriteString(line)
+			continue
+		}
+		key := strings.TrimSpace(trimmed[:eq])
+		if newValue, ok := updates[key]; ok && !applied[key] {
+			out.WriteString(key + "=" + newValue + "\n")
+			applied[key] = true
+		} else {
+			out.WriteString(line)
+		}
+	}
+
+	// Ensure trailing newline before appending new keys.
+	current := out.String()
+	if len(current) > 0 && !strings.HasSuffix(current, "\n") {
+		out.WriteString("\n")
+	}
+
+	// Append keys that weren't already in the file (in stable key order).
+	keys := make([]string, 0, len(updates))
+	for k := range updates {
+		if !applied[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out.WriteString(k + "=" + updates[k] + "\n")
+	}
+
+	if err := os.WriteFile(path, []byte(out.String()), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
 }

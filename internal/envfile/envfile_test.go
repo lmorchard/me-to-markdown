@@ -73,3 +73,58 @@ func writeEnv(t *testing.T, body string) string {
 	}
 	return path
 }
+
+func TestUpsertCreatesFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "env")
+	if err := Upsert(path, map[string]string{
+		"MASTODON_SERVER": "https://example.social",
+		"GITHUB_TOKEN":    "ghp_xxx",
+	}); err != nil {
+		t.Fatalf("Upsert failed: %v", err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("re-Load failed: %v", err)
+	}
+	want := []string{
+		"GITHUB_TOKEN=ghp_xxx",
+		"MASTODON_SERVER=https://example.social",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("entries after Upsert mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestUpsertReplacesInPlace(t *testing.T) {
+	path := writeEnv(t, `# header
+MASTODON_SERVER=https://old.example
+GITHUB_TOKEN=old-token
+
+# more comments
+LINKDING_URL=https://linkding.example
+`)
+	if err := Upsert(path, map[string]string{
+		"MASTODON_SERVER": "https://new.example",
+		"GITHUB_TOKEN":    "new-token",
+		"SPOTIFY_CLIENT_ID": "spotify-id",
+	}); err != nil {
+		t.Fatalf("Upsert failed: %v", err)
+	}
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("re-read failed: %v", err)
+	}
+	want := `# header
+MASTODON_SERVER=https://new.example
+GITHUB_TOKEN=new-token
+
+# more comments
+LINKDING_URL=https://linkding.example
+SPOTIFY_CLIENT_ID=spotify-id
+`
+	if string(body) != want {
+		t.Fatalf("file contents mismatch\n got:\n%s\nwant:\n%s", body, want)
+	}
+}
