@@ -92,6 +92,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 	if len(selected) == 0 {
 		return errors.New("no tools selected")
 	}
+	log.Infof("Window: --since %s%s", since, formatUntil(until))
 	log.Infof("Selected %d tool(s): %s", len(selected), toolNames(selected))
 
 	// Each tool's section ends up at the same index as its entry in selected.
@@ -106,6 +107,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
 
+	overallStart := time.Now()
 	for i, t := range selected {
 		wg.Add(1)
 		go func(i int, t registry.Tool) {
@@ -114,6 +116,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 		}(i, t)
 	}
 	wg.Wait()
+	log.Infof("All %d tool(s) finished in %s", len(selected), time.Since(overallStart).Round(time.Millisecond))
 
 	// Build the combined output. Each section is prefixed with `## {Label}`
 	// — if the tool itself emits H1/H2 headers, they nest underneath ours,
@@ -145,11 +148,37 @@ func runExport(cmd *cobra.Command, args []string) error {
 	if err := writeOutput(output, combined.Bytes()); err != nil {
 		return err
 	}
+	if output != "" && output != "-" {
+		log.Infof("Wrote %s combined output to %s", humanBytes(combined.Len()), output)
+	} else {
+		log.Infof("Wrote %s combined output to stdout", humanBytes(combined.Len()))
+	}
 
 	if anyFailed {
 		return fmt.Errorf("one or more tools failed (see error sections above and stderr)")
 	}
 	return nil
+}
+
+// formatUntil formats the `--until` flag for the window log line; returns
+// empty string if no until was provided.
+func formatUntil(until string) string {
+	if until == "" {
+		return ""
+	}
+	return " --until " + until
+}
+
+// humanBytes renders byte counts as a short string (e.g. "12.3KB").
+func humanBytes(n int) string {
+	switch {
+	case n < 1024:
+		return fmt.Sprintf("%dB", n)
+	case n < 1024*1024:
+		return fmt.Sprintf("%.1fKB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%.1fMB", float64(n)/(1024*1024))
+	}
 }
 
 // runTool invokes a single tool's `export` subcommand with the supplied
@@ -163,9 +192,10 @@ func runTool(parentCtx context.Context, log loggerLike, t registry.Tool, since, 
 	binPath, source, err := runner.Resolve(t.Binary)
 	if err != nil {
 		out.err = err
+		log.Infof("%s: skipped (%v)", t.Slug, err)
 		return
 	}
-	log.Debugf("%s resolved via %s: %s", t.Binary, source, binPath)
+	log.Infof("%s: starting (%s via %s)", t.Slug, binPath, source)
 
 	ctx, cancel := context.WithTimeout(parentCtx, defaultToolTimeout)
 	defer cancel()
@@ -181,7 +211,9 @@ func runTool(parentCtx context.Context, log loggerLike, t registry.Tool, since, 
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
+	start := time.Now()
 	err = cmd.Run()
+	elapsed := time.Since(start).Round(time.Millisecond)
 	out.stdout = stdout.Bytes()
 	out.stderr = stderr.Bytes()
 	if err != nil {
@@ -190,7 +222,10 @@ func runTool(parentCtx context.Context, log loggerLike, t registry.Tool, since, 
 		} else {
 			out.err = err
 		}
+		log.Infof("%s: failed in %s", t.Slug, elapsed)
+		return
 	}
+	log.Infof("%s: completed in %s (%s)", t.Slug, elapsed, humanBytes(len(out.stdout)))
 	return
 }
 
