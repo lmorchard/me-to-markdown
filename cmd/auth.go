@@ -205,48 +205,21 @@ func authSpotify(ctx context.Context, t registry.Tool, envFilePath string, in *b
 }
 
 // authPocketcasts prompts for email + password, then shells into
-// `pocketcasts-to-markdown login --email <> --password-stdin`.
+// `pocketcasts-to-markdown login --email <> --password-stdin`. The
+// password is kept in memory through the login attempt and only
+// persisted to the env file if the login succeeds — this avoids
+// polluting the file with a known-bad password if the credentials
+// turn out to be wrong. POCKETCASTS_PASSWORD is stripped from the
+// subprocess env because the tool's login refuses --password-stdin
+// when env-var password is also set.
 func authPocketcasts(ctx context.Context, t registry.Tool, envFilePath string, in *bufio.Reader, force bool) error {
-	email, err := promptKey(in, "POCKETCASTS_EMAIL", "Pocket Casts email: ", force, false)
+	email, err := promptOrReuse(in, envFilePath, "POCKETCASTS_EMAIL", "Pocket Casts email: ", force, false)
 	if err != nil {
 		return err
 	}
-	if email == "" {
-		// already set in env; reload current value
-		email = os.Getenv("POCKETCASTS_EMAIL")
-		if email == "" {
-			for _, e := range reloadEnv(envFilePath) {
-				if strings.HasPrefix(e, "POCKETCASTS_EMAIL=") {
-					email = strings.TrimPrefix(e, "POCKETCASTS_EMAIL=")
-					break
-				}
-			}
-		}
-	} else {
-		if err := envfile.Upsert(envFilePath, map[string]string{"POCKETCASTS_EMAIL": email}); err != nil {
-			return err
-		}
-	}
-
-	password, err := promptKey(in, "POCKETCASTS_PASSWORD", "Pocket Casts password: ", force, true)
+	password, err := promptOrReuse(in, envFilePath, "POCKETCASTS_PASSWORD", "Pocket Casts password: ", force, true)
 	if err != nil {
 		return err
-	}
-	if password != "" {
-		if err := envfile.Upsert(envFilePath, map[string]string{"POCKETCASTS_PASSWORD": password}); err != nil {
-			return err
-		}
-	} else {
-		// Already-set case: use the existing value just to feed login.
-		for _, e := range reloadEnv(envFilePath) {
-			if strings.HasPrefix(e, "POCKETCASTS_PASSWORD=") {
-				password = strings.TrimPrefix(e, "POCKETCASTS_PASSWORD=")
-				break
-			}
-		}
-		if password == "" {
-			password = os.Getenv("POCKETCASTS_PASSWORD")
-		}
 	}
 	if email == "" || password == "" {
 		return errors.New("missing POCKETCASTS_EMAIL or POCKETCASTS_PASSWORD")
@@ -259,11 +232,73 @@ func authPocketcasts(ctx context.Context, t registry.Tool, envFilePath string, i
 
 	fmt.Println("Exchanging credentials for a Pocket Casts bearer token…")
 	c := exec.CommandContext(ctx, binPath, "login", "--email", email, "--password-stdin")
-	c.Env = append(os.Environ(), reloadEnv(envFilePath)...)
+	// Strip POCKETCASTS_PASSWORD from the inherited env: the tool's
+	// `login` refuses --password-stdin when env-var password is set.
+	// The password reaches login via stdin instead.
+	c.Env = append(stripEnvKeys(os.Environ(), "POCKETCASTS_PASSWORD"),
+		stripEnvKeys(reloadEnv(envFilePath), "POCKETCASTS_PASSWORD")...)
 	c.Stdin = strings.NewReader(password + "\n")
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
-	return c.Run()
+	if err := c.Run(); err != nil {
+		return err
+	}
+
+	// Login succeeded — persist credentials so future runs (and token
+	// refresh on expiry) can re-auth without prompting.
+	return envfile.Upsert(envFilePath, map[string]string{
+		"POCKETCASTS_EMAIL":    email,
+		"POCKETCASTS_PASSWORD": password,
+	})
+}
+
+// promptOrReuse returns either a freshly prompted value or the
+// existing value (process env, then env file) for the given key,
+// matching the same skip-if-set semantics as promptKey.
+func promptOrReuse(in *bufio.Reader, envFilePath, key, prompt string, force, secret bool) (string, error) {
+	v, err := promptKey(in, key, prompt, force, secret)
+	if err != nil {
+		return "", err
+	}
+	if v != "" {
+		return v, nil
+	}
+	// Skipped — fall back to whatever is already configured.
+	if existing := os.Getenv(key); existing != "" {
+		return existing, nil
+	}
+	for _, e := range reloadEnv(envFilePath) {
+		if strings.HasPrefix(e, key+"=") {
+			return strings.TrimPrefix(e, key+"="), nil
+		}
+	}
+	return "", nil
+}
+
+// stripEnvKeys returns env with any KEY=VALUE entries whose KEY is in
+// keys removed. Useful for hand-off to a subprocess that conflicts on
+// an inherited env var.
+func stripEnvKeys(env []string, keys ...string) []string {
+	if len(keys) == 0 {
+		return env
+	}
+	skip := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		skip[k] = true
+	}
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		eq := strings.IndexByte(e, '=')
+		if eq < 0 {
+			out = append(out, e)
+			continue
+		}
+		if skip[e[:eq]] {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // promptKey asks for the given env-var value. If the variable is
