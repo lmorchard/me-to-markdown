@@ -31,7 +31,7 @@ func init() {
 
 func runList(cmd *cobra.Command, args []string) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SLUG\tSTATUS\tVERSION\tPATH")
+	_, _ = fmt.Fprintln(w, "SLUG\tSTATUS\tVERSION\tPATH")
 	for _, t := range registry.Tools {
 		path, source, err := runner.Resolve(t.Binary)
 		status := "missing"
@@ -49,7 +49,7 @@ func runList(cmd *cobra.Command, args []string) error {
 			version = probeVersion(cmd.Context(), path)
 			shownPath = path
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", t.Slug, status, version, shownPath)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", t.Slug, status, version, shownPath)
 	}
 	return w.Flush()
 }

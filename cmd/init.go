@@ -67,7 +67,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	fmt.Fprint(os.Stdout, "\n"+nextStepsBlock())
+	_, _ = fmt.Fprint(os.Stdout, "\n"+nextStepsBlock())
 	return nil
 }
 
