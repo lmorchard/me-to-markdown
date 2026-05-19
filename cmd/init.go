@@ -52,6 +52,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 			cmdArgs = append(cmdArgs, "--force")
 		}
 		c := exec.CommandContext(ctx, path, cmdArgs...)
+		c.Env = append(os.Environ(), envFileExtra...)
 		var stdout, stderr bytes.Buffer
 		c.Stdout = &stdout
 		c.Stderr = &stderr

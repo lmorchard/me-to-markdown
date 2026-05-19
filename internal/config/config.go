@@ -21,4 +21,10 @@ type Config struct {
 	// orchestrator otherwise renders in the combined output. Errors are
 	// still logged to stderr and the overall exit code is non-zero.
 	OmitErrors bool
+
+	// EnvFile is the path to a KEY=VALUE file whose entries are merged
+	// into every subprocess's environment. Empty = no override; falls
+	// back to the conventional default ($XDG_CONFIG_HOME/me-to-markdown/env)
+	// at load time if that file exists.
+	EnvFile string
 }

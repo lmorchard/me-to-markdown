@@ -176,6 +176,7 @@ func runTool(parentCtx context.Context, log loggerLike, t registry.Tool, since, 
 	}
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
+	cmd.Env = append(os.Environ(), envFileExtra...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
