@@ -97,9 +97,13 @@ func setupLogging() {
 func GetConfig() *config.Config {
 	if cfg == nil {
 		cfg = &config.Config{
-			Verbose: viper.GetBool("verbose"),
-			Debug:   viper.GetBool("debug"),
-			LogJSON: viper.GetBool("log_json"),
+			Verbose:    viper.GetBool("verbose"),
+			Debug:      viper.GetBool("debug"),
+			LogJSON:    viper.GetBool("log_json"),
+			Since:      viper.GetString("since"),
+			Include:    viper.GetStringSlice("include"),
+			Exclude:    viper.GetStringSlice("exclude"),
+			OmitErrors: viper.GetBool("omit_errors"),
 		}
 	}
 	return cfg

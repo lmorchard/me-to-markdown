@@ -1,12 +1,24 @@
 package config
 
 // Config holds application configuration for me-to-markdown.
-//
-// Phase 0 carries only the standard logging fields. Phase 2 will extend this
-// with orchestrator-specific options (include/exclude defaults, default
-// --since window, omit_errors, managed-bin-dir override).
 type Config struct {
 	Verbose bool
 	Debug   bool
 	LogJSON bool
+
+	// Since is the default --since value used by `export` when no flag
+	// is provided. Accepts Go duration (e.g. "168h") or YYYY-MM-DD; the
+	// command parses it the same way as the per-tool export contract.
+	Since string
+
+	// Include / Exclude let the user pre-select which tools `export`
+	// runs. Either may be set but not both. Empty Include means "all
+	// registered tools." Each entry matches a Tool.Slug.
+	Include []string
+	Exclude []string
+
+	// OmitErrors, when true, suppresses the per-tool error section the
+	// orchestrator otherwise renders in the combined output. Errors are
+	// still logged to stderr and the overall exit code is non-zero.
+	OmitErrors bool
 }
