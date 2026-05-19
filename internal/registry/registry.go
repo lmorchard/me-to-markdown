@@ -33,6 +33,7 @@ var Tools = []Tool{
 	{Binary: "linkding-to-markdown", Slug: "linkding", Label: "Linkding", Repo: "lmorchard/linkding-to-markdown"},
 	{Binary: "github-to-markdown", Slug: "github", Label: "GitHub", Repo: "lmorchard/github-to-markdown"},
 	{Binary: "spotify-to-markdown", Slug: "spotify", Label: "Spotify", Repo: "lmorchard/spotify-to-markdown"},
+	{Binary: "youtube-to-markdown", Slug: "youtube", Label: "YouTube", Repo: "lmorchard/youtube-to-markdown"},
 	{Binary: "pocketcasts-to-markdown", Slug: "pocketcasts", Label: "Pocket Casts", Repo: "lmorchard/pocketcasts-to-markdown"},
 }
 

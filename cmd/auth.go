@@ -44,6 +44,9 @@ tool is skipped with a ✓ note. On failure the tool's auth flow runs:
   spotify                        prompt for SPOTIFY_CLIENT_ID if needed,
                                  then shell into ` + "`spotify-to-markdown auth`" + `
                                  (PKCE browser flow).
+  youtube                        prompt for YOUTUBE_CLIENT_ID if needed,
+                                 then shell into ` + "`youtube-to-markdown auth`" + `
+                                 (PKCE browser flow).
   pocketcasts                    prompt for POCKETCASTS_EMAIL /
                                  POCKETCASTS_PASSWORD, then shell into
                                  ` + "`pocketcasts-to-markdown login`" + ` to
@@ -234,6 +237,7 @@ var authHandlers = map[string]authHandler{
 	"linkding":    authLinkding,
 	"github":      authGitHub,
 	"spotify":     authSpotify,
+	"youtube":     authYouTube,
 	"pocketcasts": authPocketcasts,
 }
 
@@ -301,6 +305,36 @@ func authSpotify(ctx context.Context, t registry.Tool, envFilePath string, in *b
 		return err
 	} else if v != "" {
 		if err := envfile.Upsert(envFilePath, map[string]string{"SPOTIFY_CLIENT_ID": v}); err != nil {
+			return err
+		}
+	}
+
+	binPath, _, err := runner.Resolve(t.Binary)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("\nLaunching browser OAuth flow…")
+	c := exec.CommandContext(ctx, binPath, "auth")
+	c.Env = append(os.Environ(), reloadEnv(envFilePath)...)
+	c.Stdin = os.Stdin
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	return c.Run()
+}
+
+// authYouTube ensures YOUTUBE_CLIENT_ID is set, then shells into
+// `youtube-to-markdown auth` for the browser OAuth flow.
+func authYouTube(ctx context.Context, t registry.Tool, envFilePath string, in *bufio.Reader, force bool) error {
+	fmt.Println("Create (or open) a Google Cloud OAuth 2.0 client at:")
+	fmt.Println("  https://console.cloud.google.com/apis/credentials")
+	fmt.Println("Note the Client ID. (No client secret needed — PKCE flow.)")
+	fmt.Println("Register http://127.0.0.1:8888/callback as a Redirect URI.")
+
+	if v, err := promptKey(in, "YOUTUBE_CLIENT_ID", "YouTube Client ID: ", force, false); err != nil {
+		return err
+	} else if v != "" {
+		if err := envfile.Upsert(envFilePath, map[string]string{"YOUTUBE_CLIENT_ID": v}); err != nil {
 			return err
 		}
 	}
