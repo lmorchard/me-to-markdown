@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -27,27 +28,46 @@ import (
 
 var installCmd = &cobra.Command{
 	Use:   "install [tool-slug ...]",
-	Short: "Download release binaries for one or more registered tools",
-	Long: `Download pre-built release binaries from each tool's GitHub releases
-into the managed binary directory ($XDG_DATA_HOME/me-to-markdown/bin).
+	Short: "Download (or build) binaries for one or more registered tools",
+	Long: `Install registered tools into the managed binary directory
+($XDG_DATA_HOME/me-to-markdown/bin).
 
-With no arguments, installs every registered tool. With one or more
-slugs (see `+"`me-to-markdown list`"+`), installs only those.
+Default mode downloads pre-built release tarballs from each tool's
+GitHub releases and verifies SHA-256 against checksums.txt.
+
+With --from-source, the tools are built locally from sibling
+repository checkouts via ` + "`go build`" + ` — useful for dev iteration
+without waiting for CI / releases. The default source root is the
+parent directory of the running me-to-markdown binary's source tree
+(auto-detected); pass an explicit path to override.
+
+With no positional args, installs every registered tool. With one or
+more slugs (see ` + "`me-to-markdown list`" + `), installs only those.
 
 By default each tool is fetched at its own latest tagged release. Pass
---version to pin a specific tag (applied to every tool installed in this
-invocation, so prefer installing one at a time when pinning).`,
+--version to pin a specific tag (applied to every tool installed in
+this invocation, so prefer installing one at a time when pinning).
+--version is mutually exclusive with --from-source.`,
 	RunE: runInstall,
 }
 
 func init() {
 	rootCmd.AddCommand(installCmd)
 	installCmd.Flags().String("version", "latest", "release tag to install (default: each tool's latest)")
+	installCmd.Flags().String("from-source", "", "build from sibling repos under DIR instead of fetching releases (DIR defaults to the auto-detected sibling layout)")
+	installCmd.Flag("from-source").NoOptDefVal = "auto" // bare --from-source means "auto-detect"
 }
 
 func runInstall(cmd *cobra.Command, args []string) error {
 	log := GetLogger()
 	versionFlag, _ := cmd.Flags().GetString("version")
+	fromSourceFlag, _ := cmd.Flags().GetString("from-source")
+	fromSourceSet := cmd.Flags().Changed("from-source")
+	versionSet := cmd.Flags().Changed("version")
+
+	if fromSourceSet && versionSet {
+		return errors.New("--from-source and --version are mutually exclusive")
+	}
 
 	tools, err := selectInstallTargets(args)
 	if err != nil {
@@ -61,6 +81,25 @@ func runInstall(cmd *cobra.Command, args []string) error {
 
 	ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 	defer cancel()
+
+	if fromSourceSet {
+		sourceRoot, err := resolveSourceRoot(fromSourceFlag)
+		if err != nil {
+			return err
+		}
+		log.Infof("installing from source root: %s", sourceRoot)
+		var firstErr error
+		for _, t := range tools {
+			if err := installFromSource(ctx, log, t, sourceRoot, binDir); err != nil {
+				log.Errorf("%s: %v", t.Slug, err)
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+		}
+		return firstErr
+	}
 
 	client := &http.Client{Timeout: 5 * time.Minute}
 
@@ -88,6 +127,87 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	}
 
 	return firstErr
+}
+
+// resolveSourceRoot returns the directory that contains each
+// `<binary>/` sibling repo. With value == "auto" (set by bare
+// --from-source), it auto-detects by walking up from the running
+// binary's path looking for a directory whose immediate children
+// include at least one registered tool's binary name. With an
+// explicit path, returns that path after a sanity check that it
+// contains the expected sibling layout.
+func resolveSourceRoot(value string) (string, error) {
+	if value != "auto" {
+		abs, err := filepath.Abs(value)
+		if err != nil {
+			return "", fmt.Errorf("resolve --from-source path: %w", err)
+		}
+		if _, err := sniffSiblingLayout(abs); err != nil {
+			return "", fmt.Errorf("%s: %w", abs, err)
+		}
+		return abs, nil
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("locate running binary for auto-detect: %w", err)
+	}
+	// Walk upward from the binary's directory looking for a parent that
+	// contains a sibling-layout. Stop at the filesystem root.
+	dir, _ := filepath.EvalSymlinks(filepath.Dir(exe))
+	for {
+		// Probe the directory itself and its parent (the binary may live
+		// at <root>/me-to-markdown or at <root>/me-to-markdown/.worktrees/<branch>).
+		if _, err := sniffSiblingLayout(dir); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", errors.New("could not auto-detect sibling-repo layout; pass --from-source <dir> explicitly")
+		}
+		dir = parent
+	}
+}
+
+// sniffSiblingLayout returns nil if dir contains at least one
+// `<tool.Binary>/` subdirectory that looks like a Go module
+// (has a go.mod).
+func sniffSiblingLayout(dir string) (string, error) {
+	for _, t := range registry.Tools {
+		candidate := filepath.Join(dir, t.Binary)
+		if hasGoMod(candidate) {
+			return candidate, nil
+		}
+	}
+	return "", errors.New("no sibling-repo with go.mod found here")
+}
+
+func hasGoMod(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, "go.mod"))
+	return err == nil && !info.IsDir()
+}
+
+// installFromSource builds a single tool from its sibling-repo
+// checkout and copies the binary into the managed bin dir. Streams
+// `go build` output through the orchestrator's stderr so build errors
+// are visible.
+func installFromSource(ctx context.Context, log loggerLike, t registry.Tool, sourceRoot, binDir string) error {
+	sourceDir := filepath.Join(sourceRoot, t.Binary)
+	if !hasGoMod(sourceDir) {
+		return fmt.Errorf("source dir %s missing go.mod", sourceDir)
+	}
+
+	target := filepath.Join(binDir, t.Binary)
+	log.Infof("%s: building %s -> %s", t.Slug, sourceDir, target)
+
+	build := exec.CommandContext(ctx, "go", "build", "-o", target, ".")
+	build.Dir = sourceDir
+	build.Stderr = os.Stderr
+	build.Stdout = os.Stderr // go build is normally quiet; route any noise to stderr
+	if err := build.Run(); err != nil {
+		return fmt.Errorf("go build in %s: %w", sourceDir, err)
+	}
+	return nil
 }
 
 func selectInstallTargets(args []string) ([]registry.Tool, error) {
