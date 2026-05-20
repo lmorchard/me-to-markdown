@@ -14,6 +14,7 @@ tool's `export` subcommand in parallel:
 - [`linkding-to-markdown`](https://github.com/lmorchard/linkding-to-markdown) — Linkding bookmarks
 - [`github-to-markdown`](https://github.com/lmorchard/github-to-markdown) — GitHub activity
 - [`spotify-to-markdown`](https://github.com/lmorchard/spotify-to-markdown) — Spotify listening history
+- [`youtube-to-markdown`](https://github.com/lmorchard/youtube-to-markdown) — YouTube liked videos
 - [`pocketcasts-to-markdown`](https://github.com/lmorchard/pocketcasts-to-markdown) — Pocket Casts episodes
 
 ...then concatenates each tool's output into a single Markdown document with
@@ -132,7 +133,7 @@ Run any command with `--help` for full usage details.
 | `--omit-errors` | Suppress per-tool error sections in the combined output | false |
 
 Tool slugs match the `SLUG` column in `me-to-markdown list` (e.g. `mastodon`,
-`linkding`, `github`, `spotify`, `pocketcasts`).
+`linkding`, `github`, `spotify`, `youtube`, `pocketcasts`).
 
 ## Configuration
 
@@ -168,7 +169,7 @@ All keys can also be overridden via environment variables prefixed with
 
 The orchestrator can load a single `KEY=VALUE` file once at startup and
 merge its entries into every subprocess's environment. Useful for
-keeping all five tools' secrets in one place without per-tool config
+keeping all six tools' secrets in one place without per-tool config
 edits.
 
 ```sh
@@ -191,6 +192,8 @@ LINKDING_URL=https://bookmarks.example.com
 LINKDING_TOKEN=...
 GITHUB_TOKEN=ghp_...
 SPOTIFY_CLIENT_ID=...
+YOUTUBE_CLIENT_ID=...
+YOUTUBE_CLIENT_SECRET=...
 POCKETCASTS_EMAIL=you@example.com
 POCKETCASTS_PASSWORD=...
 ```
