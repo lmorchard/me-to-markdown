@@ -21,10 +21,17 @@ import (
 // by default; configurable later if the need arises.
 const defaultToolTimeout = 5 * time.Minute
 
+// toolResult holds one tool subprocess's captured output and run error.
+type toolResult struct {
+	stdout []byte
+	stderr []byte
+	err    error
+}
+
 var exportCmd = &cobra.Command{
 	Use:   "export",
 	Short: "Run every registered *-to-markdown tool in parallel and concatenate the output",
-	Long: `Invoke every selected *-to-markdown tool's `+"`export`"+` subcommand in parallel
+	Long: `Invoke every selected *-to-markdown tool's ` + "`export`" + ` subcommand in parallel
 over a single time window, then concatenate the output into one Markdown
 document with section headers per tool.
 
@@ -96,12 +103,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 	log.Infof("Selected %d tool(s): %s", len(selected), toolNames(selected))
 
 	// Each tool's section ends up at the same index as its entry in selected.
-	type result struct {
-		stdout []byte
-		stderr []byte
-		err    error
-	}
-	results := make([]result, len(selected))
+	results := make([]toolResult, len(selected))
 	var wg sync.WaitGroup
 
 	ctx, cancel := context.WithCancel(cmd.Context())
@@ -130,19 +132,12 @@ func runExport(cmd *cobra.Command, args []string) error {
 		if r.err != nil {
 			anyFailed = true
 			log.Errorf("%s export failed: %v", t.Binary, r.err)
-			if omitErrors {
-				continue
-			}
-			fmt.Fprintf(&combined, "## %s\n\n> Error: %s export failed: %s\n\n",
-				t.Label, t.Binary, errSummary(r.err, r.stderr))
+		}
+		section, skip := renderToolSection(t, r, "##", omitErrors)
+		if skip {
 			continue
 		}
-		fmt.Fprintf(&combined, "## %s\n\n", t.Label)
-		combined.Write(r.stdout)
-		if !bytes.HasSuffix(r.stdout, []byte("\n")) {
-			combined.WriteByte('\n')
-		}
-		combined.WriteByte('\n')
+		combined.Write(section)
 	}
 
 	if err := writeOutput(output, combined.Bytes()); err != nil {
@@ -158,6 +153,31 @@ func runExport(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("one or more tools failed (see error sections above and stderr)")
 	}
 	return nil
+}
+
+// renderToolSection renders one tool's contribution to the output: a header
+// at the given level (e.g. "#" or "##") followed by the tool's stdout, or an
+// error block if the run failed. The second return value reports whether the
+// section should be skipped entirely (a failed tool while omitErrors is set).
+func renderToolSection(t registry.Tool, r toolResult, header string, omitErrors bool) ([]byte, bool) {
+	var buf bytes.Buffer
+	if r.err != nil {
+		if omitErrors {
+			return nil, true
+		}
+		fmt.Fprintf(&buf, "%s %s\n\n> Error: %s export failed: %s\n\n",
+			header, t.Label, t.Binary, errSummary(r.err, r.stderr))
+		return buf.Bytes(), false
+	}
+	fmt.Fprintf(&buf, "%s %s\n\n", header, t.Label)
+	if len(r.stdout) > 0 {
+		buf.Write(r.stdout)
+		if !bytes.HasSuffix(r.stdout, []byte("\n")) {
+			buf.WriteByte('\n')
+		}
+	}
+	buf.WriteByte('\n')
+	return buf.Bytes(), false
 }
 
 // formatUntil formats the `--until` flag for the window log line; returns
@@ -184,11 +204,7 @@ func humanBytes(n int) string {
 // runTool invokes a single tool's `export` subcommand with the supplied
 // time window flags, capturing stdout and stderr. Per-tool timeout is
 // enforced via context.
-func runTool(parentCtx context.Context, log loggerLike, t registry.Tool, since, until string) (out struct {
-	stdout []byte
-	stderr []byte
-	err    error
-}) {
+func runTool(parentCtx context.Context, log loggerLike, t registry.Tool, since, until string) (out toolResult) {
 	binPath, source, err := runner.Resolve(t.Binary)
 	if err != nil {
 		out.err = err
