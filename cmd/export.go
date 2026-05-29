@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,7 @@ func init() {
 	exportCmd.Flags().String("since", "", "Start of time window (YYYY-MM-DD or Go duration like 168h) — required unless set in config")
 	exportCmd.Flags().String("until", "", "End of time window (YYYY-MM-DD, defaults to now)")
 	exportCmd.Flags().StringP("output", "o", "", "Output file (default: stdout)")
+	exportCmd.Flags().StringP("output-dir", "d", "", "Write one file per tool into this directory instead of concatenating. Mutually exclusive with --output.")
 	exportCmd.Flags().StringSlice("include", nil, "Run only these tools (comma-separated slugs). Mutually exclusive with --exclude.")
 	exportCmd.Flags().StringSlice("exclude", nil, "Skip these tools (comma-separated slugs). Mutually exclusive with --include.")
 	exportCmd.Flags().Bool("omit-errors", false, "Suppress per-tool error sections in the combined output")
@@ -68,6 +70,10 @@ func runExport(cmd *cobra.Command, args []string) error {
 	since := viper.GetString("since")
 	until, _ := cmd.Flags().GetString("until")
 	output, _ := cmd.Flags().GetString("output")
+	outputDir, _ := cmd.Flags().GetString("output-dir")
+	if output != "" && outputDir != "" {
+		return errors.New("--output and --output-dir are mutually exclusive")
+	}
 
 	if since == "" {
 		return errors.New("--since is required (or set `since:` in config)")
@@ -120,12 +126,24 @@ func runExport(cmd *cobra.Command, args []string) error {
 	wg.Wait()
 	log.Infof("All %d tool(s) finished in %s", len(selected), time.Since(overallStart).Round(time.Millisecond))
 
+	omitErrors := c.OmitErrors
+
+	if outputDir != "" {
+		anyFailed, err := writePerToolFiles(log, outputDir, selected, results, omitErrors)
+		if err != nil {
+			return err
+		}
+		if anyFailed {
+			return fmt.Errorf("one or more tools failed (see error files and stderr)")
+		}
+		return nil
+	}
+
 	// Build the combined output. Each section is prefixed with `## {Label}`
 	// — if the tool itself emits H1/H2 headers, they nest underneath ours,
 	// which is the desired shape for a combined weeknotes document.
 	var combined bytes.Buffer
 	anyFailed := false
-	omitErrors := c.OmitErrors
 
 	for i, t := range selected {
 		r := results[i]
@@ -180,6 +198,40 @@ func renderToolSection(t registry.Tool, r toolResult, header string, omitErrors 
 	}
 	buf.WriteByte('\n')
 	return buf.Bytes(), false
+}
+
+// writePerToolFiles writes one Markdown file per selected tool into dir,
+// named "{slug}.md" with an H1 "# {Label}" header. The directory is created
+// if missing; unrelated pre-existing files are left untouched. It returns
+// whether any tool failed (so the caller can set a non-zero exit code).
+func writePerToolFiles(log loggerLike, dir string, selected []registry.Tool, results []toolResult, omitErrors bool) (bool, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false, fmt.Errorf("creating output dir %s: %w", dir, err)
+	}
+
+	anyFailed := false
+	filesWritten := 0
+	totalBytes := 0
+	for i, t := range selected {
+		r := results[i]
+		if r.err != nil {
+			anyFailed = true
+			log.Errorf("%s export failed: %v", t.Binary, r.err)
+		}
+		section, skip := renderToolSection(t, r, "#", omitErrors)
+		if skip {
+			continue
+		}
+		path := filepath.Join(dir, t.Slug+".md")
+		if err := os.WriteFile(path, section, 0o644); err != nil {
+			return anyFailed, fmt.Errorf("writing %s: %w", path, err)
+		}
+		log.Infof("Wrote %s to %s", humanBytes(len(section)), path)
+		filesWritten++
+		totalBytes += len(section)
+	}
+	log.Infof("Wrote %d file(s), %s total to %s", filesWritten, humanBytes(totalBytes), dir)
+	return anyFailed, nil
 }
 
 // formatUntil formats the `--until` flag for the window log line; returns
