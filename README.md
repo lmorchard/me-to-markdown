@@ -22,6 +22,11 @@ tool's `export` subcommand in parallel:
 an error section in place of their output (unless `--omit-errors` is set);
 the orchestrator's exit code is non-zero if any tool failed.
 
+Pass `--output-dir <dir>` instead of `-o` to write one Markdown file per
+source (`mastodon.md`, `github.md`, …), each with a `# {Label}` heading,
+rather than one concatenated document. The directory is created if needed;
+existing unrelated files are left in place.
+
 The orchestrator deliberately stays thin: each underlying tool keeps its own
 config, state, and authentication. `me-to-markdown` is a coordinator, not an
 abstraction layer.
@@ -128,6 +133,7 @@ Run any command with `--help` for full usage details.
 | `--since` | Start of window (`YYYY-MM-DD` or Go duration like `168h`) | required (or set in config) |
 | `--until` | End of window (`YYYY-MM-DD`, end-of-day inclusive) | now |
 | `-o`, `--output` | Combined output file | stdout |
+| `-d`, `--output-dir` | Write one `{slug}.md` file per tool into this directory instead of concatenating. Mutually exclusive with `-o`. | unset |
 | `--include` | Comma-separated tool slugs to run (mutually exclusive with `--exclude`) | all tools |
 | `--exclude` | Comma-separated tool slugs to skip (mutually exclusive with `--include`) | none |
 | `--omit-errors` | Suppress per-tool error sections in the combined output | false |
