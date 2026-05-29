@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -69,8 +70,4 @@ func TestRenderToolSection_ErrorOmitted(t *testing.T) {
 	}
 }
 
-var errTest = &simpleErr{"exit status 1"}
-
-type simpleErr struct{ s string }
-
-func (e *simpleErr) Error() string { return e.s }
+var errTest = errors.New("exit status 1")

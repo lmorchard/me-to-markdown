@@ -170,6 +170,8 @@ func renderToolSection(t registry.Tool, r toolResult, header string, omitErrors 
 		return buf.Bytes(), false
 	}
 	fmt.Fprintf(&buf, "%s %s\n\n", header, t.Label)
+	// Guard the write so an empty (but successful) export yields a single
+	// trailing blank line rather than a doubled one.
 	if len(r.stdout) > 0 {
 		buf.Write(r.stdout)
 		if !bytes.HasSuffix(r.stdout, []byte("\n")) {
