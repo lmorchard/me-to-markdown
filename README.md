@@ -1,9 +1,10 @@
 # me-to-markdown
 
 Run the family of `*-to-markdown` tools in parallel over a single time window
-and concatenate the output into one combined Markdown document. Designed for
-periodic personal-data summaries — weeknotes, journals, "what did I do this
-week" reports — pulled from multiple sources at once.
+and concatenate the output into one combined Markdown document — or write one
+file per source. Designed for periodic personal-data summaries — weeknotes,
+journals, "what did I do this week" reports — pulled from multiple sources at
+once.
 
 ## What it does
 
@@ -117,7 +118,7 @@ scaffolds one per tool in the current directory.
 
 | Command   | What it does |
 | --------- | ------------ |
-| `export`  | Run every selected tool's `export` in parallel; concatenate the output. Main user-facing command. |
+| `export`  | Run every selected tool's `export` in parallel; concatenate the output (or write one file per source with `--output-dir`). Main user-facing command. |
 | `install` | Download release binaries into the managed bin dir, verify SHA-256 (or `--from-source` to build from local sibling repos). |
 | `init`    | Run each tool's `init` to scaffold config files; print next-step instructions for interactive auth flows. |
 | `auth`    | Walk the per-tool authorization flows; persist secrets to the shared env file. |
