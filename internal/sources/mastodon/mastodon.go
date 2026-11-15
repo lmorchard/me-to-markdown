@@ -212,7 +212,7 @@ func (s *Source) RenderMarkdown(w io.Writer, items []model.Item) error {
 	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
 
 	for _, d := range dates {
-		fmt.Fprintf(w, "### %s\n\n", d)
+		fmt.Fprintf(w, "## %s\n\n", d)
 		for _, item := range grouped[d] {
 			isReblog, _ := item.Metadata["is_reblog"].(bool)
 			prefix := ""

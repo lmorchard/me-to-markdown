@@ -360,7 +360,7 @@ func (s *Source) RenderMarkdown(w io.Writer, items []model.Item) error {
 	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
 
 	for _, d := range dates {
-		fmt.Fprintf(w, "### %s\n\n", d)
+		fmt.Fprintf(w, "## %s\n\n", d)
 		for _, item := range grouped[d] {
 			channel, _ := item.Metadata["channel_title"].(string)
 			videoID, _ := item.Metadata["video_id"].(string)

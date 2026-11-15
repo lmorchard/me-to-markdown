@@ -321,7 +321,7 @@ func (s *Source) RenderMarkdown(w io.Writer, items []model.Item) error {
 	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
 
 	for _, d := range dates {
-		fmt.Fprintf(w, "### %s\n\n", d)
+		fmt.Fprintf(w, "## %s\n\n", d)
 		for _, item := range grouped[d] {
 			repo, _ := item.Metadata["repo"].(string)
 			kind, _ := item.Metadata["kind"].(string)

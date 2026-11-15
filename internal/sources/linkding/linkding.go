@@ -224,7 +224,7 @@ func (s *Source) RenderMarkdown(w io.Writer, items []model.Item) error {
 	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
 
 	for _, d := range dates {
-		fmt.Fprintf(w, "### %s\n\n", d)
+		fmt.Fprintf(w, "## %s\n\n", d)
 		dayItems := grouped[d]
 		for _, item := range dayItems {
 			fmt.Fprintf(w, "- [%s](%s)", item.Title, item.URL)
