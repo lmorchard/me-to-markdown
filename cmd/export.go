@@ -2,60 +2,51 @@ package cmd
 
 import (
 	"bytes"
-	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/lmorchard/me-to-markdown/internal/registry"
-	"github.com/lmorchard/me-to-markdown/internal/runner"
+	"github.com/lmorchard/me-to-markdown/internal/model"
+	"github.com/lmorchard/me-to-markdown/internal/sources"
+	"github.com/lmorchard/me-to-markdown/internal/store"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
-// defaultToolTimeout caps how long any one tool subprocess may run. Generous
-// by default; configurable later if the need arises.
-const defaultToolTimeout = 5 * time.Minute
-
-// toolResult holds one tool subprocess's captured output and run error.
-type toolResult struct {
-	stdout []byte
-	stderr []byte
-	err    error
+// SourceExportData represents the fetched items for a source ready for formatting.
+type SourceExportData struct {
+	Source sources.Source
+	Items  []model.Item
+	Err    error
 }
 
 var exportCmd = &cobra.Command{
 	Use:   "export",
-	Short: "Run every registered *-to-markdown tool in parallel and concatenate the output",
-	Long: `Invoke every selected *-to-markdown tool's ` + "`export`" + ` subcommand in parallel
-over a single time window, then concatenate the output into one Markdown
-document with section headers per tool.
+	Short: "Export personal data exhaust items from local SQLite storage",
+	Long: `Export personal data exhaust items covering a time window. Output can be formatted
+as Markdown (default, perfect for weeknotes), JSON, or JSONL.
 
-Tools that fail render an error section in place of their output (unless
---omit-errors is set). The process exit code reflects whether any tool
-failed.
-
-Example usage:
-  me-to-markdown export --since 168h -o weeknotes.md
-  me-to-markdown export --since 2026-05-11 --until 2026-05-18 --include mastodon,github`,
+Output can be written to a single combined file/stdout (-o) or split into per-source
+files in a directory (-d).`,
 	RunE: runExport,
 }
 
 func init() {
 	rootCmd.AddCommand(exportCmd)
 
-	exportCmd.Flags().String("since", "", "Start of time window (YYYY-MM-DD or Go duration like 168h) — required unless set in config")
+	exportCmd.Flags().String("since", "", "Start of time window (YYYY-MM-DD or Go duration like 168h) — required")
 	exportCmd.Flags().String("until", "", "End of time window (YYYY-MM-DD, defaults to now)")
 	exportCmd.Flags().StringP("output", "o", "", "Output file (default: stdout)")
-	exportCmd.Flags().StringP("output-dir", "d", "", "Write one file per tool into this directory instead of concatenating. Mutually exclusive with --output.")
-	exportCmd.Flags().StringSlice("include", nil, "Run only these tools (comma-separated slugs). Mutually exclusive with --exclude.")
-	exportCmd.Flags().StringSlice("exclude", nil, "Skip these tools (comma-separated slugs). Mutually exclusive with --include.")
-	exportCmd.Flags().Bool("omit-errors", false, "Suppress per-tool error sections in the combined output")
+	exportCmd.Flags().StringP("output-dir", "d", "", "Write one file per source into this directory instead of concatenating")
+	exportCmd.Flags().String("format", "markdown", "Output format: markdown, json, jsonl")
+	exportCmd.Flags().Bool("sync", false, "Trigger sync before exporting")
+	exportCmd.Flags().StringSlice("include", nil, "Export only these sources (comma-separated slugs)")
+	exportCmd.Flags().StringSlice("exclude", nil, "Skip these sources (comma-separated slugs)")
+	exportCmd.Flags().Bool("omit-errors", false, "Suppress per-source error sections")
 
 	_ = viper.BindPFlag("since", exportCmd.Flags().Lookup("since"))
 	_ = viper.BindPFlag("include", exportCmd.Flags().Lookup("include"))
@@ -71,20 +62,27 @@ func runExport(cmd *cobra.Command, args []string) error {
 	until, _ := cmd.Flags().GetString("until")
 	output, _ := cmd.Flags().GetString("output")
 	outputDir, _ := cmd.Flags().GetString("output-dir")
+	format, _ := cmd.Flags().GetString("format")
+	shouldSync, _ := cmd.Flags().GetBool("sync")
+
 	if output != "" && outputDir != "" {
 		return errors.New("--output and --output-dir are mutually exclusive")
 	}
-
 	if since == "" {
 		return errors.New("--since is required (or set `since:` in config)")
 	}
 
-	// Resolve include/exclude with mutual-exclusion check.
+	tw, err := model.ParseTimeWindow(since, until, time.Now())
+	if err != nil {
+		return fmt.Errorf("invalid time window: %w", err)
+	}
+
 	flagsIncludeSet := cmd.Flags().Changed("include")
 	flagsExcludeSet := cmd.Flags().Changed("exclude")
 	if flagsIncludeSet && flagsExcludeSet {
 		return errors.New("--include and --exclude are mutually exclusive")
 	}
+
 	include := c.Include
 	exclude := c.Exclude
 	if flagsIncludeSet {
@@ -94,307 +92,157 @@ func runExport(cmd *cobra.Command, args []string) error {
 		exclude, _ = cmd.Flags().GetStringSlice("exclude")
 		include = nil
 	}
-	if len(include) > 0 && len(exclude) > 0 {
-		return errors.New("config has both `include:` and `exclude:` — pick one")
-	}
 
-	selected, err := selectTools(include, exclude)
-	if err != nil {
-		return err
-	}
+	selected := filterSources(include, exclude)
 	if len(selected) == 0 {
-		return errors.New("no tools selected")
+		return errors.New("no sources selected")
 	}
-	log.Infof("Window: --since %s%s", since, formatUntil(until))
-	log.Infof("Selected %d tool(s): %s", len(selected), toolNames(selected))
 
-	// Each tool's section ends up at the same index as its entry in selected.
-	results := make([]toolResult, len(selected))
-	var wg sync.WaitGroup
-
-	ctx, cancel := context.WithCancel(cmd.Context())
-	defer cancel()
-
-	overallStart := time.Now()
-	for i, t := range selected {
-		wg.Add(1)
-		go func(i int, t registry.Tool) {
-			defer wg.Done()
-			results[i] = runTool(ctx, log, t, since, until)
-		}(i, t)
+	st, err := GetStore()
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
 	}
-	wg.Wait()
-	log.Infof("All %d tool(s) finished in %s", len(selected), time.Since(overallStart).Round(time.Millisecond))
+	defer func() { _ = st.Close() }()
 
-	omitErrors := c.OmitErrors
-
-	if outputDir != "" {
-		anyFailed, err := writePerToolFiles(log, outputDir, selected, results, omitErrors)
-		if err != nil {
-			return err
+	if shouldSync {
+		log.Infof("Running pre-export sync for %d source(s)...", len(selected))
+		env := GetEnvMap()
+		opts := sources.SyncOptions{Since: tw.Since}
+		for _, s := range selected {
+			if _, sErr := s.Sync(cmd.Context(), st, env, opts); sErr != nil {
+				log.Warnf("sync %s: %v", s.Name(), sErr)
+			}
 		}
-		if anyFailed {
-			return fmt.Errorf("one or more tools failed (see error files and stderr)")
+	}
+
+	data := make([]SourceExportData, len(selected))
+	for i, src := range selected {
+		items, qErr := st.GetItems(cmd.Context(), store.ItemFilter{
+			Sources: []string{src.Name()},
+			Since:   tw.Since,
+			Until:   tw.Until,
+		})
+		data[i] = SourceExportData{Source: src, Items: items, Err: qErr}
+	}
+
+	// Format output
+	switch strings.ToLower(format) {
+	case "json":
+		return exportJSON(output, outputDir, data)
+	case "jsonl":
+		return exportJSONL(output, outputDir, data)
+	case "markdown", "md":
+		return exportMarkdown(output, outputDir, data, c.OmitErrors)
+	default:
+		return fmt.Errorf("unknown format %q (supported: markdown, json, jsonl)", format)
+	}
+}
+
+func exportMarkdown(output, outputDir string, data []SourceExportData, omitErrors bool) error {
+	if outputDir != "" {
+		if err := os.MkdirAll(outputDir, 0o755); err != nil {
+			return fmt.Errorf("create output directory: %w", err)
+		}
+		for _, d := range data {
+			filePath := filepath.Join(outputDir, d.Source.Name()+".md")
+			var buf bytes.Buffer
+			fmt.Fprintf(&buf, "# %s\n\n", d.Source.Label())
+			if d.Err != nil && !omitErrors {
+				fmt.Fprintf(&buf, "Error querying items: %v\n\n", d.Err)
+			} else {
+				_ = d.Source.RenderMarkdown(&buf, d.Items)
+			}
+			if err := os.WriteFile(filePath, buf.Bytes(), 0o644); err != nil {
+				return fmt.Errorf("write %s: %w", filePath, err)
+			}
 		}
 		return nil
 	}
 
-	// Build the combined output. Each section is prefixed with `## {Label}`
-	// — if the tool itself emits H1/H2 headers, they nest underneath ours,
-	// which is the desired shape for a combined weeknotes document.
 	var combined bytes.Buffer
-	anyFailed := false
-
-	for i, t := range selected {
-		r := results[i]
-		if r.err != nil {
-			anyFailed = true
-			log.Errorf("%s export failed: %v", t.Binary, r.err)
-		}
-		section, skip := renderToolSection(t, r, "##", omitErrors)
-		if skip {
-			continue
-		}
-		combined.Write(section)
-	}
-
-	if err := writeOutput(output, combined.Bytes()); err != nil {
-		return err
-	}
-	if output != "" && output != "-" {
-		log.Infof("Wrote %s combined output to %s", humanBytes(combined.Len()), output)
-	} else {
-		log.Infof("Wrote %s combined output to stdout", humanBytes(combined.Len()))
-	}
-
-	if anyFailed {
-		return fmt.Errorf("one or more tools failed (see error sections above and stderr)")
-	}
-	return nil
-}
-
-// renderToolSection renders one tool's contribution to the output: a header
-// at the given level (e.g. "#" or "##") followed by the tool's stdout, or an
-// error block if the run failed. The second return value reports whether the
-// section should be skipped entirely (a failed tool while omitErrors is set).
-func renderToolSection(t registry.Tool, r toolResult, header string, omitErrors bool) ([]byte, bool) {
-	var buf bytes.Buffer
-	if r.err != nil {
-		if omitErrors {
-			return nil, true
-		}
-		fmt.Fprintf(&buf, "%s %s\n\n> Error: %s export failed: %s\n\n",
-			header, t.Label, t.Binary, errSummary(r.err, r.stderr))
-		return buf.Bytes(), false
-	}
-	fmt.Fprintf(&buf, "%s %s\n\n", header, t.Label)
-	// Guard the write so an empty (but successful) export yields a single
-	// trailing blank line rather than a doubled one.
-	if len(r.stdout) > 0 {
-		buf.Write(r.stdout)
-		if !bytes.HasSuffix(r.stdout, []byte("\n")) {
-			buf.WriteByte('\n')
-		}
-	}
-	buf.WriteByte('\n')
-	return buf.Bytes(), false
-}
-
-// writePerToolFiles writes one Markdown file per selected tool into dir,
-// named "{slug}.md" with an H1 "# {Label}" header. The directory is created
-// if missing; unrelated pre-existing files are left untouched. It returns
-// whether any tool failed (so the caller can set a non-zero exit code).
-func writePerToolFiles(log loggerLike, dir string, selected []registry.Tool, results []toolResult, omitErrors bool) (bool, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return false, fmt.Errorf("creating output dir %s: %w", dir, err)
-	}
-
-	anyFailed := false
-	filesWritten := 0
-	totalBytes := 0
-	for i, t := range selected {
-		r := results[i]
-		if r.err != nil {
-			anyFailed = true
-			log.Errorf("%s export failed: %v", t.Binary, r.err)
-		}
-		section, skip := renderToolSection(t, r, "#", omitErrors)
-		if skip {
-			continue
-		}
-		path := filepath.Join(dir, t.Slug+".md")
-		if err := os.WriteFile(path, section, 0o644); err != nil {
-			return anyFailed, fmt.Errorf("writing %s: %w", path, err)
-		}
-		log.Infof("Wrote %s to %s", humanBytes(len(section)), path)
-		filesWritten++
-		totalBytes += len(section)
-	}
-	log.Infof("Wrote %d file(s), %s total to %s", filesWritten, humanBytes(totalBytes), dir)
-	return anyFailed, nil
-}
-
-// formatUntil formats the `--until` flag for the window log line; returns
-// empty string if no until was provided.
-func formatUntil(until string) string {
-	if until == "" {
-		return ""
-	}
-	return " --until " + until
-}
-
-// humanBytes renders byte counts as a short string (e.g. "12.3KB").
-func humanBytes(n int) string {
-	switch {
-	case n < 1024:
-		return fmt.Sprintf("%dB", n)
-	case n < 1024*1024:
-		return fmt.Sprintf("%.1fKB", float64(n)/1024)
-	default:
-		return fmt.Sprintf("%.1fMB", float64(n)/(1024*1024))
-	}
-}
-
-// runTool invokes a single tool's `export` subcommand with the supplied
-// time window flags, capturing stdout and stderr. Per-tool timeout is
-// enforced via context.
-func runTool(parentCtx context.Context, log loggerLike, t registry.Tool, since, until string) (out toolResult) {
-	binPath, source, err := runner.Resolve(t.Binary)
-	if err != nil {
-		out.err = err
-		log.Infof("%s: skipped (%v)", t.Slug, err)
-		return
-	}
-	log.Infof("%s: starting (%s via %s)", t.Slug, binPath, source)
-
-	ctx, cancel := context.WithTimeout(parentCtx, defaultToolTimeout)
-	defer cancel()
-
-	args := []string{"export", "--since", since}
-	if until != "" {
-		args = append(args, "--until", until)
-	}
-
-	cmd := exec.CommandContext(ctx, binPath, args...)
-	cmd.Env = append(os.Environ(), envFileExtra...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	start := time.Now()
-	err = cmd.Run()
-	elapsed := time.Since(start).Round(time.Millisecond)
-	out.stdout = stdout.Bytes()
-	out.stderr = stderr.Bytes()
-	if err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			out.err = fmt.Errorf("timed out after %s", defaultToolTimeout)
+	for _, d := range data {
+		fmt.Fprintf(&combined, "## %s\n\n", d.Source.Label())
+		if d.Err != nil {
+			if !omitErrors {
+				fmt.Fprintf(&combined, "Error querying items: %v\n\n", d.Err)
+			}
+		} else if len(d.Items) == 0 {
+			fmt.Fprintf(&combined, "_No items recorded for this time window._\n\n")
 		} else {
-			out.err = err
+			_ = d.Source.RenderMarkdown(&combined, d.Items)
 		}
-		log.Infof("%s: failed in %s", t.Slug, elapsed)
-		return
 	}
-	log.Infof("%s: completed in %s (%s)", t.Slug, elapsed, humanBytes(len(out.stdout)))
-	return
+
+	return writeOutput(output, combined.Bytes())
 }
 
-// selectTools returns the registered tools filtered by include/exclude.
-// If include is non-empty, only those slugs are kept (in registry order).
-// Otherwise all tools are kept except those in exclude.
-// Unknown slugs return an error.
-func selectTools(include, exclude []string) ([]registry.Tool, error) {
-	include = normalizeSlugs(include)
-	exclude = normalizeSlugs(exclude)
-
-	known := func(slug string) bool {
-		_, ok := registry.BySlug(slug)
-		return ok
-	}
-	for _, s := range include {
-		if !known(s) {
-			return nil, fmt.Errorf("unknown --include slug %q (run `me-to-markdown list` for valid slugs)", s)
+func exportJSON(output, outputDir string, data []SourceExportData) error {
+	if outputDir != "" {
+		if err := os.MkdirAll(outputDir, 0o755); err != nil {
+			return fmt.Errorf("create output directory: %w", err)
 		}
-	}
-	for _, s := range exclude {
-		if !known(s) {
-			return nil, fmt.Errorf("unknown --exclude slug %q", s)
-		}
-	}
-
-	if len(include) > 0 {
-		set := stringSet(include)
-		out := make([]registry.Tool, 0, len(include))
-		for _, t := range registry.Tools {
-			if set[t.Slug] {
-				out = append(out, t)
+		for _, d := range data {
+			filePath := filepath.Join(outputDir, d.Source.Name()+".json")
+			b, err := json.MarshalIndent(d.Items, "", "  ")
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(filePath, b, 0o644); err != nil {
+				return fmt.Errorf("write %s: %w", filePath, err)
 			}
 		}
-		return out, nil
+		return nil
 	}
 
-	set := stringSet(exclude)
-	out := make([]registry.Tool, 0, len(registry.Tools))
-	for _, t := range registry.Tools {
-		if !set[t.Slug] {
-			out = append(out, t)
-		}
+	all := make(map[string][]model.Item)
+	for _, d := range data {
+		all[d.Source.Name()] = d.Items
 	}
-	return out, nil
-}
-
-func normalizeSlugs(in []string) []string {
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		s = strings.TrimSpace(s)
-		if s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-func stringSet(in []string) map[string]bool {
-	m := make(map[string]bool, len(in))
-	for _, s := range in {
-		m[s] = true
-	}
-	return m
-}
-
-func toolNames(tools []registry.Tool) string {
-	names := make([]string, len(tools))
-	for i, t := range tools {
-		names[i] = t.Slug
-	}
-	return strings.Join(names, ", ")
-}
-
-func writeOutput(path string, data []byte) error {
-	if path == "" || path == "-" {
-		_, err := os.Stdout.Write(data)
+	b, err := json.MarshalIndent(all, "", "  ")
+	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return writeOutput(output, b)
 }
 
-// errSummary returns a short single-line description for inclusion in the
-// per-tool error section. The first non-empty line of stderr is preferred
-// over the raw exec error, since it tends to be more informative.
-func errSummary(err error, stderr []byte) string {
-	for _, line := range bytes.Split(stderr, []byte("\n")) {
-		trimmed := bytes.TrimSpace(line)
-		if len(trimmed) > 0 {
-			return string(trimmed)
+func exportJSONL(output, outputDir string, data []SourceExportData) error {
+	if outputDir != "" {
+		if err := os.MkdirAll(outputDir, 0o755); err != nil {
+			return fmt.Errorf("create output directory: %w", err)
+		}
+		for _, d := range data {
+			filePath := filepath.Join(outputDir, d.Source.Name()+".jsonl")
+			f, err := os.Create(filePath)
+			if err != nil {
+				return err
+			}
+			enc := json.NewEncoder(f)
+			for _, it := range d.Items {
+				_ = enc.Encode(it)
+			}
+			_ = f.Close()
+		}
+		return nil
+	}
+
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	for _, d := range data {
+		for _, it := range d.Items {
+			_ = enc.Encode(it)
 		}
 	}
-	return err.Error()
+	return writeOutput(output, buf.Bytes())
 }
 
-// loggerLike is the subset of *logrus.Logger we use. Keeps test mocks
-// trivial if we ever want them.
-type loggerLike interface {
-	Debugf(format string, args ...interface{})
-	Infof(format string, args ...interface{})
-	Errorf(format string, args ...interface{})
+func writeOutput(output string, content []byte) error {
+	if output == "" || output == "-" {
+		_, err := os.Stdout.Write(content)
+		return err
+	}
+	dir := filepath.Dir(output)
+	if dir != "." && dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
+	}
+	return os.WriteFile(output, content, 0o644)
 }

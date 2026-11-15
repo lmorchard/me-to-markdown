@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"github.com/lmorchard/me-to-markdown/internal/envfile"
 	"github.com/lmorchard/me-to-markdown/internal/registry"
 	"github.com/lmorchard/me-to-markdown/internal/runner"
+	"github.com/lmorchard/me-to-markdown/internal/sources"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -167,28 +167,23 @@ func runAuthForTool(ctx context.Context, t registry.Tool, envFilePath string, in
 // from "bad network." The user re-running auth will see the same
 // error and can act on it.
 func validateAuth(ctx context.Context, t registry.Tool, envFilePath string) error {
-	binPath, _, err := runner.Resolve(t.Binary)
-	if err != nil {
-		return err
+	src, ok := sources.Get(t.Slug)
+	if !ok {
+		return fmt.Errorf("unknown source %s", t.Slug)
+	}
+
+	env := GetEnvMap()
+	for _, e := range reloadEnv(envFilePath) {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			env[parts[0]] = parts[1]
+		}
 	}
 
 	vctx, cancel := context.WithTimeout(ctx, validateTimeout)
 	defer cancel()
 
-	c := exec.CommandContext(vctx, binPath, "validate-auth")
-	c.Env = append(os.Environ(), reloadEnv(envFilePath)...)
-	c.Stdout = io.Discard
-	var stderr bytes.Buffer
-	c.Stderr = &stderr
-
-	if err := c.Run(); err != nil {
-		summary := firstNonEmptyLine(stderr.Bytes())
-		if summary == "" {
-			summary = err.Error()
-		}
-		return errors.New(summary)
-	}
-	return nil
+	return src.ValidateAuth(vctx, env)
 }
 
 func firstNonEmptyLine(b []byte) string {

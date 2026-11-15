@@ -3,10 +3,18 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/lmorchard/me-to-markdown/internal/config"
 	"github.com/lmorchard/me-to-markdown/internal/envfile"
+	_ "github.com/lmorchard/me-to-markdown/internal/sources/github"
+	_ "github.com/lmorchard/me-to-markdown/internal/sources/linkding"
+	_ "github.com/lmorchard/me-to-markdown/internal/sources/mastodon"
+	_ "github.com/lmorchard/me-to-markdown/internal/sources/pocketcasts"
+	_ "github.com/lmorchard/me-to-markdown/internal/sources/spotify"
+	_ "github.com/lmorchard/me-to-markdown/internal/sources/youtube"
+	"github.com/lmorchard/me-to-markdown/internal/store"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -47,11 +55,13 @@ func init() {
 	rootCmd.PersistentFlags().Bool("debug", false, "debug output")
 	rootCmd.PersistentFlags().Bool("log-json", false, "output logs in JSON format")
 	rootCmd.PersistentFlags().String("env-file", "", fmt.Sprintf("KEY=VALUE file merged into each subprocess env (default: %s if present)", envfile.DefaultPath()))
+	rootCmd.PersistentFlags().String("db", "", "Path to SQLite database (default: $XDG_DATA_HOME/me-to-markdown/exhaust.db)")
 
 	_ = viper.BindPFlag("verbose", rootCmd.PersistentFlags().Lookup("verbose"))
 	_ = viper.BindPFlag("debug", rootCmd.PersistentFlags().Lookup("debug"))
 	_ = viper.BindPFlag("log_json", rootCmd.PersistentFlags().Lookup("log-json"))
 	_ = viper.BindPFlag("env_file", rootCmd.PersistentFlags().Lookup("env-file"))
+	_ = viper.BindPFlag("db", rootCmd.PersistentFlags().Lookup("db"))
 }
 
 func initConfig() {
@@ -152,3 +162,43 @@ func loadEnvFile() {
 func GetLogger() *logrus.Logger {
 	return log
 }
+
+func defaultDBPath() string {
+	if v := os.Getenv("XDG_DATA_HOME"); v != "" {
+		return filepath.Join(v, "me-to-markdown", "exhaust.db")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".", "exhaust.db")
+	}
+	return filepath.Join(home, ".local", "share", "me-to-markdown", "exhaust.db")
+}
+
+// GetStore opens and returns the SQLite database configured by flag, config, or default.
+func GetStore() (*store.Store, error) {
+	dbPath := viper.GetString("db")
+	if dbPath == "" {
+		dbPath = defaultDBPath()
+	}
+	log.Debugf("Using database: %s", dbPath)
+	return store.Open(dbPath)
+}
+
+// GetEnvMap returns a map of environment variables merged from os.Environ() and the loaded env file.
+func GetEnvMap() map[string]string {
+	m := make(map[string]string)
+	for _, env := range os.Environ() {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) == 2 {
+			m[parts[0]] = parts[1]
+		}
+	}
+	for _, entry := range envFileExtra {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) == 2 {
+			m[parts[0]] = parts[1]
+		}
+	}
+	return m
+}
+
