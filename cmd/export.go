@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lmorchard/me-to-markdown/internal/model"
@@ -108,11 +110,19 @@ func runExport(cmd *cobra.Command, args []string) error {
 		log.Infof("Running pre-export sync for %d source(s)...", len(selected))
 		env := GetEnvMap()
 		opts := sources.SyncOptions{Since: tw.Since}
+		var wg sync.WaitGroup
 		for _, s := range selected {
-			if _, sErr := s.Sync(cmd.Context(), st, env, opts); sErr != nil {
-				log.Warnf("sync %s: %v", s.Name(), sErr)
-			}
+			wg.Add(1)
+			go func(src sources.Source) {
+				defer wg.Done()
+				ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
+				defer cancel()
+				if _, sErr := src.Sync(ctx, st, env, opts); sErr != nil {
+					log.Warnf("sync %s: %v", src.Name(), sErr)
+				}
+			}(s)
 		}
+		wg.Wait()
 	}
 
 	data := make([]SourceExportData, len(selected))
