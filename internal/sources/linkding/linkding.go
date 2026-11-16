@@ -223,29 +223,30 @@ func (s *Source) RenderMarkdown(w io.Writer, items []model.Item) error {
 
 	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
 
+	ew := sources.NewErrWriter(w)
 	for _, d := range dates {
-		fmt.Fprintf(w, "## %s\n\n", d)
+		ew.Printf("## %s\n\n", d)
 		dayItems := grouped[d]
 		for _, item := range dayItems {
-			fmt.Fprintf(w, "- [%s](%s)", item.Title, item.URL)
+			ew.Printf("- [%s](%s)", item.Title, item.URL)
 			if item.Summary != "" {
-				fmt.Fprintf(w, " — %s", strings.ReplaceAll(item.Summary, "\n", " "))
+				ew.Printf(" — %s", strings.ReplaceAll(item.Summary, "\n", " "))
 			}
 			if len(item.Tags) > 0 {
-				fmt.Fprintf(w, " `[%s]`", strings.Join(item.Tags, ", "))
+				ew.Printf(" `[%s]`", strings.Join(item.Tags, ", "))
 			}
-			fmt.Fprintln(w)
+			ew.Println()
 
 			if strings.TrimSpace(item.Content) != "" {
 				lines := strings.Split(strings.TrimSpace(item.Content), "\n")
 				for _, line := range lines {
-					fmt.Fprintf(w, "  > %s\n", line)
+					ew.Printf("  > %s\n", line)
 				}
-				fmt.Fprintln(w)
+				ew.Println()
 			}
 		}
-		fmt.Fprintln(w)
+		ew.Println()
 	}
 
-	return nil
+	return ew.Err()
 }

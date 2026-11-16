@@ -320,13 +320,14 @@ func (s *Source) RenderMarkdown(w io.Writer, items []model.Item) error {
 
 	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
 
+	ew := sources.NewErrWriter(w)
 	for _, d := range dates {
-		fmt.Fprintf(w, "## %s\n\n", d)
+		ew.Printf("## %s\n\n", d)
 		for _, item := range grouped[d] {
 			repo, _ := item.Metadata["repo"].(string)
 			kind, _ := item.Metadata["kind"].(string)
 
-			fmt.Fprintf(w, "- **%s** `[%s]` [%s](%s) (%s)\n",
+			ew.Printf("- **%s** `[%s]` [%s](%s) (%s)\n",
 				repo,
 				kind,
 				item.Title,
@@ -334,8 +335,8 @@ func (s *Source) RenderMarkdown(w io.Writer, items []model.Item) error {
 				item.Timestamp.Local().Format("15:04"),
 			)
 		}
-		fmt.Fprintln(w)
+		ew.Println()
 	}
 
-	return nil
+	return ew.Err()
 }

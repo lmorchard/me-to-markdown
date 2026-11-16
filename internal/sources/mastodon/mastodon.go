@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -211,8 +210,9 @@ func (s *Source) RenderMarkdown(w io.Writer, items []model.Item) error {
 
 	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
 
+	ew := sources.NewErrWriter(w)
 	for _, d := range dates {
-		fmt.Fprintf(w, "## %s\n\n", d)
+		ew.Printf("## %s\n\n", d)
 		for _, item := range grouped[d] {
 			isReblog, _ := item.Metadata["is_reblog"].(bool)
 			prefix := ""
@@ -220,13 +220,13 @@ func (s *Source) RenderMarkdown(w io.Writer, items []model.Item) error {
 				prefix = "🔄 Boosted: "
 			}
 
-			fmt.Fprintf(w, "- %s[%s](%s)\n\n", prefix, item.Timestamp.Local().Format("15:04"), item.URL)
+			ew.Printf("- %s[%s](%s)\n\n", prefix, item.Timestamp.Local().Format("15:04"), item.URL)
 			if item.Summary != "" {
 				lines := strings.Split(strings.TrimSpace(item.Summary), "\n")
 				for _, l := range lines {
-					fmt.Fprintf(w, "  > %s\n", l)
+					ew.Printf("  > %s\n", l)
 				}
-				fmt.Fprintln(w)
+				ew.Println()
 			}
 
 			for _, m := range item.Media {
@@ -234,16 +234,16 @@ func (s *Source) RenderMarkdown(w io.Writer, items []model.Item) error {
 				if desc == "" {
 					desc = "Media attachment"
 				}
-				fmt.Fprintf(w, "  Media: [%s](%s) - %s\n", m.Type, m.URL, desc)
+				ew.Printf("  Media: [%s](%s) - %s\n", m.Type, m.URL, desc)
 			}
 			if len(item.Media) > 0 {
-				fmt.Fprintln(w)
+				ew.Println()
 			}
 		}
-		fmt.Fprintln(w)
+		ew.Println()
 	}
 
-	return nil
+	return ew.Err()
 }
 
 func cleanContent(content string) string {
@@ -268,12 +268,4 @@ func cleanContent(content string) string {
 
 	content = html.UnescapeString(content)
 	return strings.TrimSpace(content)
-}
-
-func dummyURL(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return ""
-	}
-	return u.String()
 }

@@ -85,3 +85,35 @@ func BySlug(slug string) (Source, error) {
 	}
 	return s, nil
 }
+
+// ErrWriter wraps an io.Writer and tracks any write errors.
+type ErrWriter struct {
+	w   io.Writer
+	err error
+}
+
+// NewErrWriter creates a new ErrWriter.
+func NewErrWriter(w io.Writer) *ErrWriter {
+	return &ErrWriter{w: w}
+}
+
+// Printf formats and writes to w unless an error has already occurred.
+func (ew *ErrWriter) Printf(format string, a ...any) {
+	if ew.err != nil {
+		return
+	}
+	_, ew.err = fmt.Fprintf(ew.w, format, a...)
+}
+
+// Println writes to w unless an error has already occurred.
+func (ew *ErrWriter) Println(a ...any) {
+	if ew.err != nil {
+		return
+	}
+	_, ew.err = fmt.Fprintln(ew.w, a...)
+}
+
+// Err returns the first error encountered, if any.
+func (ew *ErrWriter) Err() error {
+	return ew.err
+}

@@ -44,7 +44,7 @@ document.`,
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
@@ -83,7 +83,7 @@ func initConfig() {
 
 	if err := viper.ReadInConfig(); err != nil {
 		if cfgFile != "" {
-			fmt.Fprintf(os.Stderr, "Error reading config file: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "Error reading config file: %v\n", err)
 			os.Exit(1)
 		}
 	}
@@ -145,7 +145,7 @@ func loadEnvFile() {
 	entries, err := envfile.Load(path)
 	if err != nil {
 		if explicit != "" {
-			fmt.Fprintf(os.Stderr, "Error reading env file: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "Error reading env file: %v\n", err)
 			os.Exit(1)
 		}
 		// Implicit default path failed to parse — log and continue.

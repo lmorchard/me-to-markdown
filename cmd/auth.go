@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -184,21 +183,6 @@ func validateAuth(ctx context.Context, t registry.Tool, envFilePath string) erro
 	defer cancel()
 
 	return src.ValidateAuth(vctx, env)
-}
-
-func firstNonEmptyLine(b []byte) string {
-	for _, raw := range bytes.Split(b, []byte("\n")) {
-		s := strings.TrimSpace(string(raw))
-		if s == "" {
-			continue
-		}
-		// Skip logrus timestamp prefixes for tidier output.
-		if i := strings.Index(s, "msg="); i >= 0 {
-			s = strings.Trim(s[i+4:], `"`)
-		}
-		return s
-	}
-	return ""
 }
 
 // effectiveEnvFilePath returns the path the auth command should write to.

@@ -359,21 +359,22 @@ func (s *Source) RenderMarkdown(w io.Writer, items []model.Item) error {
 
 	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
 
+	ew := sources.NewErrWriter(w)
 	for _, d := range dates {
-		fmt.Fprintf(w, "## %s\n\n", d)
+		ew.Printf("## %s\n\n", d)
 		for _, item := range grouped[d] {
 			channel, _ := item.Metadata["channel_title"].(string)
 			videoID, _ := item.Metadata["video_id"].(string)
 
-			fmt.Fprintf(w, "- **[%s](%s)** by %s (`%s`)\n", item.Title, item.URL, channel, videoID)
+			ew.Printf("- **[%s](%s)** by %s (`%s`)\n", item.Title, item.URL, channel, videoID)
 			if item.Content != "" {
-				fmt.Fprintf(w, "  > Transcript excerpt: %s\n\n", firstLine(item.Content))
+				ew.Printf("  > Transcript excerpt: %s\n\n", firstLine(item.Content))
 			}
 		}
-		fmt.Fprintln(w)
+		ew.Println()
 	}
 
-	return nil
+	return ew.Err()
 }
 
 func firstLine(s string) string {

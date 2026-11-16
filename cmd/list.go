@@ -24,7 +24,7 @@ func init() {
 func runList(cmd *cobra.Command, args []string) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(w, "SLUG\tLABEL\tAUTH STATUS")
-	fmt.Fprintln(w, "----\t-----\t-----------")
+	_, _ = fmt.Fprintln(w, "----\t-----\t-----------")
 
 	env := GetEnvMap()
 	for _, s := range sources.All() {

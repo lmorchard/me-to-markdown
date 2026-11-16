@@ -156,9 +156,9 @@ func exportMarkdown(output, outputDir string, data []SourceExportData, omitError
 		for _, d := range data {
 			filePath := filepath.Join(outputDir, d.Source.Name()+".md")
 			var buf bytes.Buffer
-			fmt.Fprintf(&buf, "# %s\n\n", d.Source.Label())
+			_, _ = fmt.Fprintf(&buf, "# %s\n\n", d.Source.Label())
 			if d.Err != nil && !omitErrors {
-				fmt.Fprintf(&buf, "Error querying items: %v\n\n", d.Err)
+				_, _ = fmt.Fprintf(&buf, "Error querying items: %v\n\n", d.Err)
 			} else {
 				_ = d.Source.RenderMarkdown(&buf, d.Items)
 			}
@@ -171,13 +171,13 @@ func exportMarkdown(output, outputDir string, data []SourceExportData, omitError
 
 	var combined bytes.Buffer
 	for _, d := range data {
-		fmt.Fprintf(&combined, "## %s\n\n", d.Source.Label())
+		_, _ = fmt.Fprintf(&combined, "## %s\n\n", d.Source.Label())
 		if d.Err != nil {
 			if !omitErrors {
-				fmt.Fprintf(&combined, "Error querying items: %v\n\n", d.Err)
+				_, _ = fmt.Fprintf(&combined, "Error querying items: %v\n\n", d.Err)
 			}
 		} else if len(d.Items) == 0 {
-			fmt.Fprintf(&combined, "_No items recorded for this time window._\n\n")
+			_, _ = fmt.Fprintf(&combined, "_No items recorded for this time window._\n\n")
 		} else {
 			_ = d.Source.RenderMarkdown(&combined, d.Items)
 		}

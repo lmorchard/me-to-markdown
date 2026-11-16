@@ -293,20 +293,21 @@ func (s *Source) RenderMarkdown(w io.Writer, items []model.Item) error {
 
 	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
 
+	ew := sources.NewErrWriter(w)
 	for _, d := range dates {
-		fmt.Fprintf(w, "## %s\n\n", d)
+		ew.Printf("## %s\n\n", d)
 		for _, item := range grouped[d] {
 			artists, _ := item.Metadata["artists"].(string)
 			album, _ := item.Metadata["album"].(string)
 
 			if item.URL != "" {
-				fmt.Fprintf(w, "- **[%s](%s)** by %s (on _%s_)\n", item.Title, item.URL, artists, album)
+				ew.Printf("- **[%s](%s)** by %s (on _%s_)\n", item.Title, item.URL, artists, album)
 			} else {
-				fmt.Fprintf(w, "- **%s** by %s (on _%s_)\n", item.Title, artists, album)
+				ew.Printf("- **%s** by %s (on _%s_)\n", item.Title, artists, album)
 			}
 		}
-		fmt.Fprintln(w)
+		ew.Println()
 	}
 
-	return nil
+	return ew.Err()
 }

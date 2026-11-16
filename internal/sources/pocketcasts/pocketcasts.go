@@ -247,21 +247,22 @@ func (s *Source) RenderMarkdown(w io.Writer, items []model.Item) error {
 
 	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
 
+	ew := sources.NewErrWriter(w)
 	for _, d := range dates {
-		fmt.Fprintf(w, "## %s\n\n", d)
+		ew.Printf("## %s\n\n", d)
 		for _, item := range grouped[d] {
 			podcast, _ := item.Metadata["podcast"].(string)
 			durationSec, _ := item.Metadata["duration"].(int)
 			durationMin := durationSec / 60
 
 			if durationMin > 0 {
-				fmt.Fprintf(w, "- **%s** — [%s](%s) (%d min)\n", podcast, item.Title, item.URL, durationMin)
+				ew.Printf("- **%s** — [%s](%s) (%d min)\n", podcast, item.Title, item.URL, durationMin)
 			} else {
-				fmt.Fprintf(w, "- **%s** — [%s](%s)\n", podcast, item.Title, item.URL)
+				ew.Printf("- **%s** — [%s](%s)\n", podcast, item.Title, item.URL)
 			}
 		}
-		fmt.Fprintln(w)
+		ew.Println()
 	}
 
-	return nil
+	return ew.Err()
 }
